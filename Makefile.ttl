@@ -1,0 +1,221 @@
+# Makefile for publishing OpenCart images to ttl.sh
+#
+# This Makefile builds the Apache and PHP images defined in the repository's
+# Dockerfiles, tags them with a shared ttl.sh UUID, and pushes them. All images
+# use the same UUID so the Helm chart can be overridden with a single value set.
+
+SHELL := /bin/bash
+
+# ttl.sh settings
+TTL_NAMESPACE ?= ttl.sh
+TTL_TTL ?= 2h
+
+# Build arguments
+PHP_VERSION ?= 8.4
+PLATFORM ?= linux/amd64
+
+# Images to build and publish. Extend this list if additional Dockerfiles are added.
+IMAGES := apache php
+
+# Helm chart settings
+CHART_NAME := opencart
+CHART_PATH := chart/opencart
+
+# Image-specific settings
+apache_DOCKERFILE := docker/apache/Dockerfile
+apache_CONTEXT := .
+apache_BUILD_ARGS :=
+
+php_DOCKERFILE := docker/php/Dockerfile
+php_CONTEXT := .
+php_BUILD_ARGS := --build-arg PHP_VERSION=$(PHP_VERSION)
+
+# Generate a UUID at invocation time. The same UUID is reused for every target by
+# passing it via the command line when invoking nested make processes.
+ifndef TTL_UUID
+TTL_UUID := $(shell uuidgen | tr '[:upper:]' '[:lower:]')
+endif
+
+# Helpers for constructing ttl.sh image references.
+define image_repo
+$(TTL_NAMESPACE)/opencart-$(1)-$(TTL_UUID)
+endef
+
+define image_ref
+$(call image_repo,$(1)):$(TTL_TTL)
+endef
+
+# Helpers for constructing ttl.sh chart references (no TTL tag - uses default 24h).
+define chart_repo
+$(TTL_NAMESPACE)/opencart-$(TTL_UUID)
+endef
+
+.PHONY: ttl-help ttl-build ttl-push ttl-publish ttl-summary build-chart push-chart ttl-deploy cmx-deploy
+.DEFAULT_GOAL := ttl-help
+
+ttl-help:
+	@echo "Makefile.ttl - helpers for ttl.sh publishing"
+	@echo ""
+	@echo "Variables:"
+	@echo "  TTL_TTL=<duration>        Expiry window for ttl.sh (default: $(TTL_TTL))"
+	@echo "  PHP_VERSION=<version>     PHP build arg for docker/php (default: $(PHP_VERSION))"
+	@echo "  PLATFORM=<platform>       Target platform for builds (default: $(PLATFORM))"
+	@echo "                           Use 'linux/amd64' for x86_64 or 'linux/arm64' for ARM"
+	@echo ""
+	@echo "Targets:"
+	@echo "  ttl-publish  Build and push all ttl.sh images and Helm chart with a fresh UUID"
+	@echo "  ttl-deploy   Run ttl-publish then install the chart with image overrides"
+	@echo "  cmx-deploy   Create Replicated cluster, expose port, wait for running, then ttl-deploy"
+	@echo "  ttl-build    Build the ttl.sh-tagged images and package Helm chart locally"
+	@echo "  ttl-push     Push previously built ttl.sh-tagged images and Helm chart"
+	@echo "  ttl-summary  Show the image and chart references for Helm overrides"
+
+ttl-build: $(addprefix build-,$(IMAGES)) build-chart
+	@echo ""
+	@echo "Built images with UUID $(TTL_UUID):"
+	@$(foreach img,$(IMAGES),echo "  $(call image_ref,$(img))";)
+	@echo "Built Helm chart:"
+	@echo "  oci://$(call chart_repo) (will use 24h default TTL)"
+
+ttl-push: $(addprefix push-,$(IMAGES)) push-chart
+	@echo ""
+	@echo "Pushed images with UUID $(TTL_UUID):"
+	@$(foreach img,$(IMAGES),echo "  $(call image_ref,$(img))";)
+	@echo "Pushed Helm chart:"
+	@echo "  oci://$(call chart_repo) (expires in 24h)"
+
+ttl-publish:
+	@$(MAKE) -f Makefile.ttl --no-print-directory TTL_UUID=$(TTL_UUID) ttl-build
+	@$(MAKE) -f Makefile.ttl --no-print-directory TTL_UUID=$(TTL_UUID) ttl-push
+	@$(MAKE) -f Makefile.ttl --no-print-directory TTL_UUID=$(TTL_UUID) ttl-summary
+
+ttl-summary:
+	@echo "ttl.sh UUID: $(TTL_UUID)"
+	@echo "ttl.sh TTL:  $(TTL_TTL) (images), 24h (chart default)"
+	@echo ""
+	@echo "Helm chart OCI reference:"
+	@echo "  oci://$(call chart_repo) (expires in 24h)"
+	@echo ""
+	@echo "Image references:"
+	@$(foreach img,$(IMAGES),echo "  $(img): repository=$(call image_repo,$(img)) tag=$(TTL_TTL)";)
+	@echo ""
+	@echo "Install the Helm chart with image overrides:"
+	@echo "  helm install opencart oci://$(call chart_repo) \\"
+	@$(foreach img,$(IMAGES),echo "    --set $(img).image.repository=$(call image_repo,$(img)) \\";)
+	@$(foreach img,$(IMAGES),echo "    --set $(img).image.tag=$(TTL_TTL) \\";)
+	@echo "    --set-string global.ttlUUID=$(TTL_UUID)"
+
+ttl-deploy:
+	@echo "Publishing images and chart to ttl.sh..."
+	@$(MAKE) -f Makefile.ttl --no-print-directory TTL_UUID=$(TTL_UUID) ttl-publish
+	@echo ""
+	@echo "Installing Helm chart with image overrides..."
+	@helm install opencart oci://$(call chart_repo) \
+		$(foreach img,$(IMAGES),--set $(img).image.repository=$(call image_repo,$(img)) ) \
+		$(foreach img,$(IMAGES),--set $(img).image.tag=$(TTL_TTL) ) \
+		--set-string global.ttlUUID=$(TTL_UUID) \
+		--set php.env.opencartHttpServer="http://localhost:30080/"
+	@echo ""
+	@echo "Deployment complete! UUID: $(TTL_UUID)"
+
+cmx-deploy:
+	@echo "Creating Replicated cluster..."
+	@CLUSTER_ID=$$(replicated cluster create --distribution k3s --output json | jq -r '.id'); \
+	if [ -z "$$CLUSTER_ID" ]; then \
+		echo "Failed to create cluster or extract ID"; \
+		exit 1; \
+	fi; \
+	echo "Cluster created with ID: $$CLUSTER_ID"; \
+	echo ""; \
+	echo "Exposing port 30080..."; \
+	EXPOSE_OUTPUT=$$(replicated cluster port expose $$CLUSTER_ID --port 30080 --protocol https --output json); \
+	HOSTNAME=$$(echo "$$EXPOSE_OUTPUT" | jq -r '.hostname'); \
+	if [ -z "$$HOSTNAME" ] || [ "$$HOSTNAME" = "null" ]; then \
+		echo "Failed to extract hostname from port expose output"; \
+		echo "Port expose output: $$EXPOSE_OUTPUT"; \
+		exit 1; \
+	fi; \
+	INGRESS_URL="https://$$HOSTNAME"; \
+	echo "Port exposed at: $$INGRESS_URL"; \
+	echo ""; \
+	echo "Waiting for cluster to be running..."; \
+	while true; do \
+		STATUS=$$(replicated cluster ls --output json | jq -r ".[] | select(.id == \"$$CLUSTER_ID\") | .status"); \
+		if [ "$$STATUS" = "running" ]; then \
+			echo "Cluster $$CLUSTER_ID is now running!"; \
+			sleep 5; \
+			break; \
+		else \
+			echo "Cluster status: $$STATUS - waiting 5 seconds..."; \
+			sleep 5; \
+		fi; \
+	done; \
+	echo ""; \
+	echo "Configuring kubeconfig for cluster $$CLUSTER_ID..."; \
+	replicated cluster kubeconfig $$CLUSTER_ID; \
+	echo ""; \
+	echo "Cluster is ready. Installing OpenCart with URL: $$INGRESS_URL/"; \
+	echo "Publishing images and chart to ttl.sh..."; \
+	$(MAKE) -f Makefile.ttl --no-print-directory TTL_UUID=$(TTL_UUID) ttl-publish; \
+	echo ""; \
+	echo "Installing Helm chart with image overrides..."; \
+	helm install opencart oci://$(call chart_repo) \
+		$(foreach img,$(IMAGES),--set $(img).image.repository=$(call image_repo,$(img)) ) \
+		$(foreach img,$(IMAGES),--set $(img).image.tag=$(TTL_TTL) ) \
+		--set-string global.ttlUUID=$(TTL_UUID) \
+		--set php.env.opencartHttpServer="$$INGRESS_URL/"; \
+	echo ""; \
+	echo "Waiting for MySQL pod to be ready..."; \
+	kubectl wait --for=condition=ready pod -l io.kompose.service=mysql --timeout=60s || { \
+		echo "MySQL pod not ready, checking status:"; \
+		kubectl get pods -l io.kompose.service=mysql; \
+		kubectl describe pod -l io.kompose.service=mysql | tail -20; \
+	}; \
+	echo "Waiting for OpenCart pod to be ready (running installer and starting services)..."; \
+	kubectl wait --for=condition=ready pod -l io.kompose.service=opencart --timeout=120s || { \
+		echo "OpenCart pod not ready, checking status:"; \
+		kubectl get pods -l io.kompose.service=opencart; \
+		echo ""; \
+		echo "Checking init container logs:"; \
+		kubectl logs -l io.kompose.service=opencart -c install-opencart --tail=30 2>/dev/null || true; \
+		echo ""; \
+		echo "Checking pod events:"; \
+		kubectl describe pod -l io.kompose.service=opencart | grep -A 10 "Events:" || true; \
+	}; \
+	echo ""; \
+	echo "Checking installation logs:"; \
+	kubectl logs -l io.kompose.service=opencart -c install-opencart --tail=50 2>/dev/null || echo "Could not get installation logs"; \
+	echo ""; \
+	echo "Deployment complete!"; \
+	echo "Access OpenCart at: $$INGRESS_URL"; \
+	echo "Admin panel: $$INGRESS_URL/admin"; \
+	echo "Default credentials: admin / admin"
+
+build-%:
+	@echo "Building $(call image_ref,$*) for platform $(PLATFORM)"
+	docker build --platform=$(PLATFORM) $(strip $($*_BUILD_ARGS)) -f $($*_DOCKERFILE) -t $(call image_ref,$*) $($*_CONTEXT)
+
+push-%:
+	@docker image inspect $(call image_ref,$*) >/dev/null 2>&1 || (echo "Image $(call image_ref,$*) not found locally. Run 'make -f Makefile.ttl ttl-build' first." && exit 1)
+	@echo "Pushing $(call image_ref,$*)"
+	docker push $(call image_ref,$*)
+
+build-chart:
+	@echo "Packaging Helm chart $(CHART_NAME)"
+	@rm -f /tmp/opencart-*.tgz
+	@# Create a copy of the chart with UUID in the name
+	@rm -rf /tmp/opencart-$(TTL_UUID)
+	@cp -r $(CHART_PATH) /tmp/opencart-$(TTL_UUID)
+	@# Update Chart.yaml to have UUID in the chart name
+	@sed -i.bak "s/^name: .*/name: opencart-$(TTL_UUID)/" /tmp/opencart-$(TTL_UUID)/Chart.yaml
+	@rm /tmp/opencart-$(TTL_UUID)/Chart.yaml.bak
+	@helm package /tmp/opencart-$(TTL_UUID) --app-version $(TTL_UUID) -d /tmp
+	@echo "Chart packaged as /tmp/opencart-$(TTL_UUID)-0.0.1.tgz"
+
+push-chart:
+	@if [ ! -f /tmp/opencart-$(TTL_UUID)-0.0.1.tgz ]; then \
+		echo "Chart package not found. Run 'make -f Makefile.ttl ttl-build' first."; \
+		exit 1; \
+	fi
+	@echo "Pushing Helm chart to oci://$(TTL_NAMESPACE)"
+	@helm push /tmp/opencart-$(TTL_UUID)-0.0.1.tgz oci://$(TTL_NAMESPACE)

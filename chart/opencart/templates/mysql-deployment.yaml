@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose -f docker-compose.yml convert
+    kompose.version: 1.37.0 (HEAD)
+  labels:
+    io.kompose.service: mysql
+  name: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: kompose -f docker-compose.yml convert
+        kompose.version: 1.37.0 (HEAD)
+      labels:
+        io.kompose.service: mysql
+    spec:
+      initContainers:
+        - name: prepare-mysql-data
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              echo "Preparing MySQL data directory..."
+              mkdir -p /var/lib/mysql
+              chmod 777 /var/lib/mysql
+              echo "MySQL data directory prepared"
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mysql-data
+      containers:
+        - env:
+            - name: MARIADB_DATABASE
+              value: {{ .Values.mysql.env.database }}
+            - name: MARIADB_PASSWORD
+              value: {{ .Values.mysql.env.password }}
+            - name: MARIADB_ROOT_PASSWORD
+              value: {{ .Values.mysql.env.rootPassword }}
+            - name: MARIADB_USER
+              value: {{ .Values.mysql.env.user }}
+          image: {{ .Values.mysql.image.repository }}:{{ .Values.mysql.image.tag }}
+          imagePullPolicy: {{ .Values.mysql.image.pullPolicy }}
+          livenessProbe:
+            exec:
+              command:
+                - mariadb-admin
+                - ping
+                - -h
+                - localhost
+                - -u
+                - root
+                - -p{{ .Values.mysql.env.rootPassword }}
+            failureThreshold: 10
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  mariadb -h localhost -u root -p{{ .Values.mysql.env.rootPassword }} -e "SELECT 1 FROM DUAL; SHOW DATABASES LIKE '{{ .Values.mysql.env.database }}';" | grep -q {{ .Values.mysql.env.database }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+          name: opencart-mysql
+          ports:
+            - containerPort: 3306
+              protocol: TCP
+          resources:
+            limits:
+              cpu: {{ .Values.mysql.resources.limits.cpu }}
+              memory: {{ .Values.mysql.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.mysql.resources.requests.cpu }}
+              memory: {{ .Values.mysql.resources.requests.memory }}
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mysql-data
+      restartPolicy: Always
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-data

@@ -1,0 +1,264 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    io.kompose.service: opencart
+  name: opencart
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: opencart
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        io.kompose.service: opencart
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for MySQL to be ready..."
+              until nc -z mysql 3306; do
+                echo "MySQL is not ready yet. Waiting..."
+                sleep 2
+              done
+              echo "MySQL is ready!"
+        - name: install-opencart
+          image: {{ .Values.php.image.repository }}:{{ .Values.php.image.tag }}
+          env:
+            - name: DB_DATABASE
+              value: {{ .Values.mysql.env.database }}
+            - name: DB_DRIVER
+              value: {{ .Values.php.env.dbDriver }}
+            - name: DB_HOSTNAME
+              value: {{ .Values.php.env.dbHostname }}
+            - name: DB_PASSWORD
+              value: {{ .Values.mysql.env.password }}
+            - name: DB_PORT
+              value: {{ .Values.php.env.dbPort | quote }}
+            - name: DB_PREFIX
+              value: {{ .Values.php.env.dbPrefix }}
+            - name: DB_USERNAME
+              value: {{ .Values.mysql.env.user }}
+            - name: OPENCART_ADMIN_EMAIL
+              value: {{ .Values.php.env.opencartAdminEmail }}
+            - name: OPENCART_HTTP_SERVER
+              value: {{ .Values.php.env.opencartHttpServer }}
+            - name: OPENCART_PASSWORD
+              value: {{ .Values.php.env.opencartPassword }}
+            - name: OPENCART_USERNAME
+              value: {{ .Values.php.env.opencartUsername }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying OpenCart files to shared volume..."
+              # The init container's /var/www has the original files
+              # We copy them to /data which is the mounted volume
+              cp -r /var/www/* /data/ 2>/dev/null || true
+              mkdir -p /data/upload/admin
+              chown -R www-data:www-data /data/upload
+              cd /data/upload
+
+              # Copy config files if they don't exist
+              if [ ! -f "config.php" ] || [ ! -s "config.php" ]; then
+                if [ -f "config-dist.php" ]; then
+                  cp "config-dist.php" "config.php"
+                fi
+              fi
+              if [ ! -f "admin/config.php" ] || [ ! -s "admin/config.php" ]; then
+                if [ -f "admin/config-dist.php" ]; then
+                  cp "admin/config-dist.php" "admin/config.php"
+                fi
+              fi
+
+              # Wait for database
+              echo "Verifying database connection..."
+              for i in {1..30}; do
+                if php -r "
+                  \$conn = @new mysqli('${DB_HOSTNAME:-mysql}', '${DB_USERNAME:-opencart}', '${DB_PASSWORD:-opencart}', '${DB_DATABASE:-opencart}', ${DB_PORT:-3306});
+                  if (\$conn->connect_error) {
+                    exit(1);
+                  } else {
+                    \$conn->close();
+                    exit(0);
+                  }
+                "; then
+                  echo "Database connection successful!"
+                  break
+                else
+                  echo "Database not ready, waiting... ($i/30)"
+                  sleep 2
+                fi
+              done
+
+              # Check if tables exist (even if lock file is present)
+              echo "Checking if database tables exist..."
+              TABLE_COUNT=$(php -r "
+                \$conn = @new mysqli('${DB_HOSTNAME:-mysql}', '${DB_USERNAME:-opencart}', '${DB_PASSWORD:-opencart}', '${DB_DATABASE:-opencart}', ${DB_PORT:-3306});
+                if (\$conn->connect_error) {
+                  echo '0';
+                  exit;
+                }
+                \$result = \$conn->query('SHOW TABLES');
+                echo (\$result ? \$result->num_rows : 0);
+                \$conn->close();
+              ")
+
+              echo "Found $TABLE_COUNT tables in database"
+
+              # If lock file exists but no tables, remove the lock
+              if [ -f "install.lock" ] && [ "$TABLE_COUNT" -eq "0" ]; then
+                echo "WARNING: install.lock exists but database has no tables. Removing lock file..."
+                rm -f install.lock
+              fi
+
+              # Run installer if needed
+              if [ ! -f "install.lock" ]; then
+                if [ -f "install/cli_install.php" ]; then
+                  echo "=== Running OpenCart installer ==="
+                  echo "HTTP Server: ${OPENCART_HTTP_SERVER:-http://localhost/}"
+                  echo "Database: ${DB_DATABASE:-opencart}@${DB_HOSTNAME:-mysql}:${DB_PORT:-3306}"
+                  echo "DB User: ${DB_USERNAME:-opencart}"
+
+                  # Run the installer and capture output
+                  php install/cli_install.php install \
+                    --username "${OPENCART_USERNAME:-admin}" \
+                    --password "${OPENCART_PASSWORD:-admin}" \
+                    --email "${OPENCART_ADMIN_EMAIL:-admin@example.com}" \
+                    --http_server "${OPENCART_HTTP_SERVER:-http://localhost/}" \
+                    --db_driver "${DB_DRIVER:-mysqli}" \
+                    --db_hostname "${DB_HOSTNAME:-mysql}" \
+                    --db_username "${DB_USERNAME:-opencart}" \
+                    --db_password "${DB_PASSWORD:-opencart}" \
+                    --db_database "${DB_DATABASE:-opencart}" \
+                    --db_port "${DB_PORT:-3306}" \
+                    --db_prefix "${DB_PREFIX:-oc_}" 2>&1
+
+                  INSTALL_RESULT=$?
+                  echo "Installation exit code: $INSTALL_RESULT"
+
+                  # Always create lock file to prevent re-runs
+                  touch install.lock
+
+                  # Verify tables were created
+                  echo "=== Verifying database tables ==="
+                  php -r "
+                    \$conn = new mysqli('${DB_HOSTNAME:-mysql}', '${DB_USERNAME:-opencart}', '${DB_PASSWORD:-opencart}', '${DB_DATABASE:-opencart}', ${DB_PORT:-3306});
+                    if (\$conn->connect_error) {
+                      die('ERROR: Connection failed: ' . \$conn->connect_error . PHP_EOL);
+                    }
+                    \$result = \$conn->query('SHOW TABLES');
+                    if (\$result) {
+                      \$count = \$result->num_rows;
+                      echo 'Found ' . \$count . ' tables in database' . PHP_EOL;
+                      if (\$count > 0) {
+                        echo 'Tables created successfully:' . PHP_EOL;
+                        while (\$row = \$result->fetch_row()) {
+                          echo '  - ' . \$row[0] . PHP_EOL;
+                        }
+                      } else {
+                        echo 'WARNING: No tables found! Installation may have failed.' . PHP_EOL;
+                        echo 'Removing install.lock to allow retry on next deployment...' . PHP_EOL;
+                        @unlink('install.lock');
+                      }
+                    }
+                    \$conn->close();
+                  "
+                else
+                  echo "ERROR: Installer script not found at install/cli_install.php"
+                  ls -la install/ || echo "Install directory not found"
+                fi
+              else
+                echo "Installation already completed (install.lock exists)"
+                # Verify tables exist
+                php -r "
+                  \$conn = @new mysqli('${DB_HOSTNAME:-mysql}', '${DB_USERNAME:-opencart}', '${DB_PASSWORD:-opencart}', '${DB_DATABASE:-opencart}', ${DB_PORT:-3306});
+                  if (\$conn->connect_error) {
+                    echo 'ERROR: Cannot verify tables - connection failed' . PHP_EOL;
+                  } else {
+                    \$result = \$conn->query('SHOW TABLES');
+                    if (\$result) {
+                      echo 'Database has ' . \$result->num_rows . ' tables' . PHP_EOL;
+                    }
+                    \$conn->close();
+                  }
+                "
+              fi
+
+              # Fix paths in config files to use /var/www instead of /data
+              echo "Fixing paths in config files..."
+              if [ -f "config.php" ]; then
+                sed -i "s|/data/|/var/www/|g" config.php
+                echo "Fixed paths in config.php"
+              fi
+              if [ -f "admin/config.php" ]; then
+                sed -i "s|/data/|/var/www/|g" admin/config.php
+                echo "Fixed paths in admin/config.php"
+              fi
+
+              echo "=== Init container completed ==="
+          volumeMounts:
+            - name: opencart-data
+              mountPath: /data
+      containers:
+        # PHP-FPM container
+        - name: php
+          image: {{ .Values.php.image.repository }}:{{ .Values.php.image.tag }}
+          imagePullPolicy: {{ .Values.php.image.pullPolicy }}
+          env:
+            - name: DB_DATABASE
+              value: {{ .Values.mysql.env.database }}
+            - name: DB_DRIVER
+              value: {{ .Values.php.env.dbDriver }}
+            - name: DB_HOSTNAME
+              value: {{ .Values.php.env.dbHostname }}
+            - name: DB_PASSWORD
+              value: {{ .Values.mysql.env.password }}
+            - name: DB_PORT
+              value: {{ .Values.php.env.dbPort | quote }}
+            - name: DB_PREFIX
+              value: {{ .Values.php.env.dbPrefix }}
+            - name: DB_USERNAME
+              value: {{ .Values.mysql.env.user }}
+            - name: TZ
+              value: {{ .Values.php.env.timezone }}
+          ports:
+            - containerPort: {{ .Values.php.containerPort }}
+              name: php-fpm
+          resources:
+            limits:
+              cpu: {{ .Values.php.resources.limits.cpu }}
+              memory: {{ .Values.php.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.php.resources.requests.cpu }}
+              memory: {{ .Values.php.resources.requests.memory }}
+          volumeMounts:
+            - name: opencart-data
+              mountPath: /var/www
+        # Apache container
+        - name: apache
+          image: {{ .Values.apache.image.repository }}:{{ .Values.apache.image.tag }}
+          imagePullPolicy: {{ .Values.apache.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.apache.containerPort }}
+              name: http
+          resources:
+            limits:
+              cpu: {{ .Values.apache.resources.limits.cpu }}
+              memory: {{ .Values.apache.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.apache.resources.requests.cpu }}
+              memory: {{ .Values.apache.resources.requests.memory }}
+          volumeMounts:
+            - name: opencart-data
+              mountPath: /var/www
+      volumes:
+        - name: opencart-data
+          emptyDir: {}

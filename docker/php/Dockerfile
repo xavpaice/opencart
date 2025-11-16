@@ -41,6 +41,15 @@ COPY ./docker/php/supervisor/services/ /etc/supervisor/conf.d/services/
 COPY docker/php/docker-opencart-entrypoint /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-opencart-entrypoint
 
+# Copy the docker configuration directory (needed by entrypoint)
+COPY docker /var/www/docker
+
+# Copy the upload directory content to the image
+COPY upload /var/www/upload
+
+# Create the directory structure that PHP expects and set permissions
+RUN chown -R www-data:www-data /var/www
+
 # Set working directory
 WORKDIR /var/www
 

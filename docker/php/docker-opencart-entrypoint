@@ -109,13 +109,22 @@ fi
 
 # Fix ownership for all files by targeting the real directory.
 echo "--- STEP 4: Fixing ownership on /var/www/upload ---"
-chown -R www-data:www-data /var/www/upload
-echo "--- Ownership fixed ---"
+# Try to change ownership, but don't fail if it's a read-only filesystem (e.g., ConfigMap in Kubernetes)
+if chown -R www-data:www-data /var/www/upload 2>/dev/null; then
+    echo "--- Ownership fixed ---"
+else
+    echo "--- Warning: Could not change ownership (possibly read-only filesystem) ---"
+fi
 
 # Set permissions for storage relocation
 echo "--- STEP 4: Setting permissions for storage relocation ---"
-chown www-data:www-data /var/www
-chmod 775 /var/www
+# Try to change ownership and permissions, but don't fail if read-only
+if chown www-data:www-data /var/www 2>/dev/null; then
+    chmod 775 /var/www 2>/dev/null || true
+    echo "--- Permissions set ---"
+else
+    echo "--- Warning: Could not set permissions (possibly read-only filesystem) ---"
+fi
 
 # ================================================================
 # STEP 5: SETUP CRON
