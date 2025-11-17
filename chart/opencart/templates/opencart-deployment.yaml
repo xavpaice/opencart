@@ -16,6 +16,7 @@ spec:
       labels:
         io.kompose.service: opencart
     spec:
+      {{- include "replicated.imagePullSecrets" . | nindent 6 }}
       initContainers:
         - name: wait-for-mysql
           image: busybox:1.35
@@ -31,7 +32,6 @@ spec:
               echo "MySQL is ready!"
         - name: install-opencart
           image: {{ .Values.php.image.registry }}/{{ .Values.php.image.repository }}:{{ .Values.php.image.tag }}
-          {{- include "replicated.imagePullSecrets" . | nindent 6 }}
           env:
             - name: DB_DATABASE
               value: {{ .Values.mysql.env.database }}
@@ -205,6 +205,7 @@ spec:
               fi
 
               echo "=== Init container completed ==="
+              exit 0
           volumeMounts:
             - name: opencart-data
               mountPath: /data
@@ -212,7 +213,6 @@ spec:
         # PHP-FPM container
         - name: php
           image: {{ .Values.php.image.registry }}/{{ .Values.php.image.repository }}:{{ .Values.php.image.tag }}
-          {{- include "replicated.imagePullSecrets" . | nindent 6 }}
           imagePullPolicy: {{ .Values.php.image.pullPolicy }}
           env:
             - name: DB_DATABASE
@@ -247,7 +247,6 @@ spec:
         # Apache container
         - name: apache
           image: {{ .Values.apache.image.registry }}/{{ .Values.apache.image.repository }}:{{ .Values.apache.image.tag }}
-          {{- include "replicated.imagePullSecrets" . | nindent 6 }}
           imagePullPolicy: {{ .Values.apache.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.apache.containerPort }}
