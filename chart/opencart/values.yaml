@@ -44,7 +44,8 @@ service:
 apache:
   replicaCount: 1
   image:
-    repository: 923411875752.dkr.ecr.us-east-1.amazonaws.com/xav-test-apache
+    registry: proxy.replicated.com
+    repository: proxy/opencart-treefrog/923411875752.dkr.ecr.us-east-1.amazonaws.com/xav-test-apache
     tag: latest
     pullPolicy: IfNotPresent
   resources:
@@ -65,7 +66,8 @@ apacheService:
 php:
   replicaCount: 1
   image:
-    repository: 923411875752.dkr.ecr.us-east-1.amazonaws.com/xav-test-php
+    registry: proxy.replicated.com
+    repository: proxy/opencart-treefrog/923411875752.dkr.ecr.us-east-1.amazonaws.com/xav-test-php
     tag: latest
     pullPolicy: IfNotPresent
   env:
