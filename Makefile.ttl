@@ -10,6 +10,13 @@ SHELL := /bin/bash
 TTL_NAMESPACE ?= ttl.sh
 TTL_TTL ?= 2h
 
+# ECR settings
+ECR_REGISTRY ?= 923411875752.dkr.ecr.us-east-1.amazonaws.com
+ECR_APACHE_REPO ?= xav-test-apache
+ECR_PHP_REPO ?= xav-test-php
+ECR_CHART_REPO ?= xav-test-chart
+ECR_TAG ?= latest
+
 # Build arguments
 PHP_VERSION ?= 8.4
 PLATFORM ?= linux/amd64
@@ -33,7 +40,7 @@ php_BUILD_ARGS := --build-arg PHP_VERSION=$(PHP_VERSION)
 # Generate a UUID at invocation time. The same UUID is reused for every target by
 # passing it via the command line when invoking nested make processes.
 ifndef TTL_UUID
-TTL_UUID := $(shell uuidgen | tr '[:upper:]' '[:lower:]')
+TTL_UUID := xav-opencart
 endif
 
 # Helpers for constructing ttl.sh image references.
@@ -50,25 +57,48 @@ define chart_repo
 $(TTL_NAMESPACE)/opencart-$(TTL_UUID)
 endef
 
+# Helpers for constructing ECR image references.
+# Each image has its own ECR repository
+define ecr_image_repo
+$(if $(filter apache,$(1)),$(ECR_REGISTRY)/$(ECR_APACHE_REPO),$(if $(filter php,$(1)),$(ECR_REGISTRY)/$(ECR_PHP_REPO),$(error Unknown image type: $(1))))
+endef
+
+define ecr_image_ref
+$(call ecr_image_repo,$(1)):$(ECR_TAG)
+endef
+
+# Helpers for constructing ECR chart references.
+define ecr_chart_repo
+$(ECR_REGISTRY)/$(ECR_CHART_REPO)
+endef
+
 .PHONY: ttl-help ttl-build ttl-push ttl-publish ttl-summary build-chart push-chart ttl-deploy cmx-deploy
+.PHONY: ecr-build ecr-push ecr-publish ecr-summary ecr-build-chart ecr-push-chart ecr-debug
 .DEFAULT_GOAL := ttl-help
 
 ttl-help:
-	@echo "Makefile.ttl - helpers for ttl.sh publishing"
+	@echo "Makefile.ttl - helpers for ttl.sh and ECR publishing"
 	@echo ""
 	@echo "Variables:"
 	@echo "  TTL_TTL=<duration>        Expiry window for ttl.sh (default: $(TTL_TTL))"
+	@echo "  ECR_TAG=<tag>            Tag for ECR images (default: $(ECR_TAG))"
 	@echo "  PHP_VERSION=<version>     PHP build arg for docker/php (default: $(PHP_VERSION))"
 	@echo "  PLATFORM=<platform>       Target platform for builds (default: $(PLATFORM))"
 	@echo "                           Use 'linux/amd64' for x86_64 or 'linux/arm64' for ARM"
 	@echo ""
-	@echo "Targets:"
+	@echo "TTL.sh Targets:"
 	@echo "  ttl-publish  Build and push all ttl.sh images and Helm chart with a fresh UUID"
 	@echo "  ttl-deploy   Run ttl-publish then install the chart with image overrides"
 	@echo "  cmx-deploy   Create Replicated cluster, expose port, wait for running, then ttl-deploy"
 	@echo "  ttl-build    Build the ttl.sh-tagged images and package Helm chart locally"
 	@echo "  ttl-push     Push previously built ttl.sh-tagged images and Helm chart"
 	@echo "  ttl-summary  Show the image and chart references for Helm overrides"
+	@echo ""
+	@echo "ECR Targets:"
+	@echo "  ecr-publish  Build and push all ECR images and Helm chart"
+	@echo "  ecr-build    Build the ECR-tagged images and package Helm chart locally"
+	@echo "  ecr-push     Push previously built ECR-tagged images and Helm chart"
+	@echo "  ecr-summary  Show the ECR image and chart references for Helm overrides"
 
 ttl-build: $(addprefix build-,$(IMAGES)) build-chart
 	@echo ""
@@ -155,9 +185,6 @@ cmx-deploy:
 	replicated cluster kubeconfig $$CLUSTER_ID; \
 	echo ""; \
 	echo "Cluster is ready. Installing OpenCart with URL: $$INGRESS_URL/"; \
-	echo "Publishing images and chart to ttl.sh..."; \
-	$(MAKE) -f Makefile.ttl --no-print-directory TTL_UUID=$(TTL_UUID) ttl-publish; \
-	echo ""; \
 	echo "Installing Helm chart with image overrides..."; \
 	helm install opencart oci://$(call chart_repo) \
 		$(foreach img,$(IMAGES),--set $(img).image.repository=$(call image_repo,$(img)) ) \
@@ -219,3 +246,80 @@ push-chart:
 	fi
 	@echo "Pushing Helm chart to oci://$(TTL_NAMESPACE)"
 	@helm push /tmp/opencart-$(TTL_UUID)-0.0.1.tgz oci://$(TTL_NAMESPACE)
+
+# ECR-specific targets
+ecr-build: $(addprefix ecr-build-,$(IMAGES)) ecr-build-chart
+	@echo ""
+	@echo "Built ECR images:"
+	@$(foreach img,$(IMAGES),echo "  $(call ecr_image_ref,$(img))";)
+	@echo "Built Helm chart for ECR:"
+	@echo "  oci://$(call ecr_chart_repo)"
+
+ecr-push: $(addprefix ecr-push-,$(IMAGES)) ecr-push-chart
+	@echo ""
+	@echo "Pushed ECR images:"
+	@$(foreach img,$(IMAGES),echo "  $(call ecr_image_ref,$(img))";)
+	@echo "Pushed Helm chart to ECR:"
+	@echo "  oci://$(call ecr_chart_repo)"
+
+ecr-publish:
+	@$(MAKE) -f Makefile.ttl --no-print-directory ecr-build
+	@$(MAKE) -f Makefile.ttl --no-print-directory ecr-push
+	@$(MAKE) -f Makefile.ttl --no-print-directory ecr-summary
+
+ecr-summary:
+	@echo "ECR Registry: $(ECR_REGISTRY)"
+	@echo "ECR Apache Repository: $(ECR_APACHE_REPO)"
+	@echo "ECR PHP Repository: $(ECR_PHP_REPO)"
+	@echo "ECR Chart Repository: $(ECR_CHART_REPO)"
+	@echo "ECR Tag: $(ECR_TAG)"
+	@echo ""
+	@echo "Helm chart OCI reference:"
+	@echo "  oci://$(ECR_REGISTRY)/$(ECR_CHART_REPO)"
+	@echo ""
+	@echo "Image references:"
+	@$(foreach img,$(IMAGES),echo "  $(img): $(call ecr_image_ref,$(img))";)
+	@echo ""
+	@echo "Install the Helm chart:"
+	@echo "  helm install opencart oci://$(ECR_REGISTRY)/$(ECR_CHART_REPO) \\"
+	@$(foreach img,$(IMAGES),echo "    --set $(img).image.repository=$(call ecr_image_repo,$(img)) \\";)
+	@$(foreach img,$(IMAGES),echo "    --set $(img).image.tag=$(ECR_TAG) \\";)
+
+ecr-build-%:
+	@echo "Building $(call ecr_image_ref,$*) for platform $(PLATFORM)"
+	docker build --platform=$(PLATFORM) $(strip $($*_BUILD_ARGS)) -f $($*_DOCKERFILE) -t $(call ecr_image_ref,$*) $($*_CONTEXT)
+
+ecr-push-%:
+	@docker image inspect $(call ecr_image_ref,$*) >/dev/null 2>&1 || (echo "Image $(call ecr_image_ref,$*) not found locally. Run 'make -f Makefile.ttl ecr-build' first." && exit 1)
+	@echo "Pushing $(call ecr_image_ref,$*)"
+	docker push $(call ecr_image_ref,$*)
+
+ecr-build-chart:
+	@echo "Packaging Helm chart for ECR"
+	@rm -f /tmp/xav-test-chart-*.tgz
+	@# Create a copy of the chart with the ECR repository name
+	@rm -rf /tmp/xav-test-chart
+	@cp -r $(CHART_PATH) /tmp/xav-test-chart
+	@# Update Chart.yaml to match the ECR repository name
+	@sed -i.bak "s/^name: .*/name: xav-test-chart/" /tmp/xav-test-chart/Chart.yaml
+	@rm /tmp/xav-test-chart/Chart.yaml.bak
+	@helm package /tmp/xav-test-chart --app-version $(ECR_TAG) -d /tmp
+	@echo "Chart packaged as /tmp/xav-test-chart-0.0.1.tgz"
+
+ecr-push-chart:
+	@if [ ! -f /tmp/xav-test-chart-0.0.1.tgz ]; then \
+		echo "Chart package not found. Run 'make -f Makefile.ttl ecr-build' first."; \
+		exit 1; \
+	fi
+	@echo "Pushing Helm chart to oci://$(ECR_REGISTRY)"
+	@helm push /tmp/xav-test-chart-0.0.1.tgz oci://$(ECR_REGISTRY)
+
+ecr-debug:
+	@echo "ECR_REGISTRY=$(ECR_REGISTRY)"
+	@echo "ECR_APACHE_REPO=$(ECR_APACHE_REPO)"
+	@echo "ECR_PHP_REPO=$(ECR_PHP_REPO)"
+	@echo "ECR_CHART_REPO=$(ECR_CHART_REPO)"
+	@echo "ECR_TAG=$(ECR_TAG)"
+	@echo "ecr_image_ref for apache: $(call ecr_image_ref,apache)"
+	@echo "ecr_image_ref for php: $(call ecr_image_ref,php)"
+	@echo "ecr_chart_repo: $(call ecr_chart_repo)"

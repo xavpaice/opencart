@@ -44,7 +44,7 @@ service:
 apache:
   replicaCount: 1
   image:
-    repository: ttl.sh/opencart-apache
+    repository: 923411875752.dkr.ecr.us-east-1.amazonaws.com/xav-test-apache
     tag: latest
     pullPolicy: IfNotPresent
   resources:
@@ -65,7 +65,7 @@ apacheService:
 php:
   replicaCount: 1
   image:
-    repository: ttl.sh/opencart-php
+    repository: 923411875752.dkr.ecr.us-east-1.amazonaws.com/xav-test-php
     tag: latest
     pullPolicy: IfNotPresent
   env:
