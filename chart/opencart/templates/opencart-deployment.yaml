@@ -213,7 +213,7 @@ spec:
         # PHP-FPM container
         - name: php
           image: {{ .Values.php.image.registry }}/{{ .Values.php.image.repository }}:{{ .Values.php.image.tag }}
-          imagePullPolicy: {{ .Values.php.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
           env:
             - name: DB_DATABASE
               value: {{ .Values.mysql.env.database }}
@@ -247,9 +247,9 @@ spec:
         # Apache container
         - name: apache
           image: {{ .Values.apache.image.registry }}/{{ .Values.apache.image.repository }}:{{ .Values.apache.image.tag }}
-          imagePullPolicy: {{ .Values.apache.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
           ports:
-            - containerPort: {{ .Values.apache.containerPort }}
+            - containerPort: 80
               name: http
           resources:
             limits:

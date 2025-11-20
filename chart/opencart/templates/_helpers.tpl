@@ -93,7 +93,6 @@ Image pull secrets
     {{- $pullSecrets = append $pullSecrets "replicated-pull-secret" -}}
   {{- end -}}
 
-
   {{- if (not (empty $pullSecrets)) -}}
 imagePullSecrets:
     {{- range $pullSecrets | uniq }}

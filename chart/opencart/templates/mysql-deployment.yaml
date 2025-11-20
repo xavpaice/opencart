@@ -47,7 +47,7 @@ spec:
             - name: MARIADB_USER
               value: {{ .Values.mysql.env.user }}
           image: {{ .Values.mysql.image.repository }}:{{ .Values.mysql.image.tag }}
-          imagePullPolicy: {{ .Values.mysql.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
           livenessProbe:
             exec:
               command:

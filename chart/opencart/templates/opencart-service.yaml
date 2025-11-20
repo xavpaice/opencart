@@ -5,11 +5,13 @@ metadata:
     io.kompose.service: opencart
   name: opencart
 spec:
-  type: NodePort
+  type: {{ .Values.apacheService.type }}
   ports:
     - name: http
       port: 80
-      targetPort: 80
-      nodePort: 30080
+      targetPort: http
+      {{- if .Values.apacheService.nodePort }}
+      nodePort: {{ .Values.apacheService.nodePort }}
+      {{- end }}
   selector:
     io.kompose.service: opencart

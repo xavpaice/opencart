@@ -11,5 +11,5 @@ spec:
     - name: wget
       image: busybox
       command: ['wget']
-      args: ['{{ include "opencart.fullname" . }}:{{ .Values.service.port }}']
+      args: ['{{ include "opencart.fullname" . }}:80']
   restartPolicy: Never

@@ -1,0 +1,75 @@
+{{- if eq .Values.apacheService.type "NodePort" }}
+  {{- if .Values.apacheService.nodePort }}
+Access OpenCart via NodePort:
+  http://<node-ip>:{{ .Values.apacheService.nodePort }}
+  {{- else }}
+Access OpenCart via NodePort:
+  http://<node-ip>:<node-port>
+  {{- end }}
+{{- else if eq .Values.apacheService.type "LoadBalancer" }}
+Access OpenCart via LoadBalancer:
+  http://<loadbalancer-ip>
+{{- else if eq .Values.apacheService.type "ClusterIP" }}
+Access OpenCart via port-forward:
+  kubectl port-forward svc/opencart 80:80 -n {{ .Release.Namespace }}
+  
+  Then access at: http://localhost:80
+{{- end }}
+
+1. Get the application URL by running these commands:
+{{- if eq .Values.apacheService.type "NodePort" }}
+  {{- if .Values.apacheService.nodePort }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services opencart)
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+  {{- else }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services opencart)
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+  {{- end }}
+{{- else if eq .Values.apacheService.type "LoadBalancer" }}
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} opencart --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:80
+{{- else if eq .Values.apacheService.type "ClusterIP" }}
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/opencart 80:80
+{{- end }}
+
+2. Admin Credentials:
+   Username: {{ .Values.php.env.opencartUsername }}
+   Password: {{ .Values.php.env.opencartPassword }}
+   Email: {{ .Values.php.env.opencartAdminEmail }}
+
+3. Database Information:
+   Host: {{ .Values.php.env.dbHostname }}
+   Port: {{ .Values.php.env.dbPort }}
+   Database: {{ .Values.mysql.env.database }}
+   Username: {{ .Values.mysql.env.user }}
+   Password: {{ .Values.mysql.env.password }}
+
+4. Check deployment status:
+   kubectl get pods -n {{ .Release.Namespace }} -l io.kompose.service=opencart
+   kubectl get pods -n {{ .Release.Namespace }} -l io.kompose.service=mysql
+
+5. View logs:
+   OpenCart PHP: kubectl logs -n {{ .Release.Namespace }} -l io.kompose.service=opencart -c php
+   OpenCart Apache: kubectl logs -n {{ .Release.Namespace }} -l io.kompose.service=opencart -c apache
+   MySQL: kubectl logs -n {{ .Release.Namespace }} -l io.kompose.service=mysql
+
+6. Access MySQL directly:
+   kubectl exec -it -n {{ .Release.Namespace }} $(kubectl get pod -n {{ .Release.Namespace }} -l io.kompose.service=mysql -o jsonpath='{.items[0].metadata.name}') -- mariadb -u {{ .Values.mysql.env.user }} -p{{ .Values.mysql.env.password }} {{ .Values.mysql.env.database }}
+
+{{- if .Values.mysql.persistence.enabled }}
+7. Persistent Volume:
+   MySQL data is persisted in PVC: mysql-data ({{ .Values.mysql.persistence.size }})
+{{- end }}
+
+{{- if .Values.autoscaling.enabled }}
+8. Autoscaling:
+   HPA is enabled with {{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas
+   Target CPU: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%
+{{- end }}
+
+NOTE: The OpenCart installation is performed automatically by an init container.
+      If installation fails, check the init container logs:
+      kubectl logs -n {{ .Release.Namespace }} -l io.kompose.service=opencart -c install-opencart --previous
+
